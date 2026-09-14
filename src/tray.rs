@@ -1,8 +1,8 @@
 ﻿use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
-    FillRect, GetDC, ReleaseDC, SelectObject, HBITMAP, HGDIOBJ,
+    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
+    DeleteObject, FillRect, GetDC, ReleaseDC, SelectObject, HBITMAP, HGDIOBJ,
 };
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -50,15 +50,13 @@ impl TrayIcon {
 
             self.current_icon = create_circle_icon(color);
 
-            let mut nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: self.hwnd,
-                uID: 1,
-                uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
-                uCallbackMessage: WM_TRAYICON,
-                hIcon: self.current_icon,
-                ..Default::default()
-            };
+            let mut nid = std::mem::zeroed::<NOTIFYICONDATAW>();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = self.hwnd;
+            nid.uID = 1;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            nid.uCallbackMessage = WM_TRAYICON;
+            nid.hIcon = self.current_icon;
 
             let tip = if is_muted {
                 "QuickMute: MUTED [Home to unmute]"
@@ -115,12 +113,10 @@ impl TrayIcon {
 impl Drop for TrayIcon {
     fn drop(&mut self) {
         unsafe {
-            let nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: self.hwnd,
-                uID: 1,
-                ..Default::default()
-            };
+            let mut nid = std::mem::zeroed::<NOTIFYICONDATAW>();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = self.hwnd;
+            nid.uID = 1;
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
             if !self.current_icon.is_invalid() {
                 let _ = DestroyIcon(self.current_icon);
@@ -135,7 +131,8 @@ unsafe fn create_circle_icon(color: COLORREF) -> HICON {
     let mem_dc = CreateCompatibleDC(hdc);
 
     let hbm_color: HBITMAP = CreateCompatibleBitmap(hdc, size, size);
-    let hbm_mask: HBITMAP = CreateCompatibleBitmap(hdc, size, size);
+    // Crucial: 1-bit monochrome mask for Windows GDI Icon creation
+    let hbm_mask: HBITMAP = CreateBitmap(size, size, 1, 1, None);
 
     let old_bmp: HGDIOBJ = SelectObject(mem_dc, hbm_color);
     let brush = CreateSolidBrush(color);
