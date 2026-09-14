@@ -12,11 +12,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::StationsAndDesktops::{OpenDesktopW, SetThreadDesktop, DESKTOP_CONTROL_FLAGS};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_HOME};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-    RegisterClassW, SetWindowLongPtrW, GetWindowLongPtrW, GWLP_USERDATA, MSG, WINDOW_EX_STYLE,
-    WM_COMMAND, WM_HOTKEY, WM_RBUTTONUP, WM_LBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, GetWindowLongPtrW,
+    GWLP_USERDATA, MSG, WINDOW_EX_STYLE, WM_COMMAND, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
+    WNDCLASSW, WS_OVERLAPPED,
 };
 
 const HOTKEY_ID: i32 = 1;
@@ -28,6 +30,16 @@ struct AppState {
 
 fn main() -> windows::core::Result<()> {
     unsafe {
+        // Explicitly attach thread to interactive user desktop "Default" so Explorer/Shell Tray APIs connect
+        if let Ok(desk) = OpenDesktopW(
+            w!("Default"),
+            DESKTOP_CONTROL_FLAGS(0),
+            false,
+            0x10000000, // GENERIC_ALL
+        ) {
+            let _ = SetThreadDesktop(desk);
+        }
+
         let instance = HINSTANCE::default();
         let class_name = w!("QuickMuteWindowClass");
 
@@ -112,7 +124,6 @@ unsafe extern "system" fn wnd_proc(
                     app.tray.show_context_menu(is_muted);
                 }
             } else if event == WM_LBUTTONUP {
-                // Left clicking the tray icon also toggles mute!
                 if let Ok(mut app) = state.try_borrow_mut() {
                     if let Ok(new_mute) = app.audio.toggle_mute() {
                         app.tray.update(new_mute);
