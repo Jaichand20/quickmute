@@ -16,7 +16,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotK
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
     RegisterClassW, SetWindowLongPtrW, GetWindowLongPtrW, GWLP_USERDATA, MSG, WINDOW_EX_STYLE,
-    WM_COMMAND, WM_HOTKEY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    WM_COMMAND, WM_HOTKEY, WM_RBUTTONUP, WM_LBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
 const HOTKEY_ID: i32 = 1;
@@ -73,7 +73,6 @@ fn main() -> windows::core::Result<()> {
         }
 
         let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
-        // Reconstitute Rc to drop properly
         let _ = Rc::from_raw(state_ptr as *const RefCell<AppState>);
     }
 
@@ -111,6 +110,14 @@ unsafe extern "system" fn wnd_proc(
                 if let Ok(app) = state.try_borrow() {
                     let is_muted = app.audio.is_muted().unwrap_or(false);
                     app.tray.show_context_menu(is_muted);
+                }
+            } else if event == WM_LBUTTONUP {
+                // Left clicking the tray icon also toggles mute!
+                if let Ok(mut app) = state.try_borrow_mut() {
+                    if let Ok(new_mute) = app.audio.toggle_mute() {
+                        app.tray.update(new_mute);
+                        play_feedback(new_mute);
+                    }
                 }
             }
             LRESULT(0)
