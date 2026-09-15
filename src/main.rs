@@ -12,7 +12,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::StationsAndDesktops::{OpenDesktopW, SetThreadDesktop, DESKTOP_CONTROL_FLAGS};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_HOME};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
@@ -30,16 +29,6 @@ struct AppState {
 
 fn main() -> windows::core::Result<()> {
     unsafe {
-        // Explicitly attach thread to interactive user desktop "Default" so Explorer/Shell Tray APIs connect
-        if let Ok(desk) = OpenDesktopW(
-            w!("Default"),
-            DESKTOP_CONTROL_FLAGS(0),
-            false,
-            0x10000000, // GENERIC_ALL
-        ) {
-            let _ = SetThreadDesktop(desk);
-        }
-
         let instance = HINSTANCE::default();
         let class_name = w!("QuickMuteWindowClass");
 
@@ -56,10 +45,7 @@ fn main() -> windows::core::Result<()> {
             class_name,
             w!("QuickMuteHiddenWindow"),
             WS_OVERLAPPED,
-            0,
-            0,
-            0,
-            0,
+            0, 0, 0, 0,
             HWND::default(),
             None,
             instance,
