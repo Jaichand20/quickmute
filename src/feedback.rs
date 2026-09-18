@@ -1,4 +1,4 @@
-﻿use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY};
+use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows::core::PCWSTR;
 
 const MUTED_WAV: &[u8] = include_bytes!("../muted.wav");
@@ -10,7 +10,7 @@ pub fn play_feedback(muted: bool) {
         let _ = PlaySoundW(
             PCWSTR(sound_data.as_ptr() as *const u16),
             None,
-            SND_MEMORY | SND_ASYNC,
+            SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
         );
     }
 }

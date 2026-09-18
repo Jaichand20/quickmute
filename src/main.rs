@@ -1,4 +1,4 @@
-﻿#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 
 mod audio;
 mod feedback;
@@ -10,17 +10,24 @@ use tray::{TrayIcon, ID_TRAY_EXIT, ID_TRAY_TOGGLE, WM_TRAYICON};
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use windows::core::w;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_HOME};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+};
+use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_HOME,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, GetWindowLongPtrW,
-    GWLP_USERDATA, MSG, WINDOW_EX_STYLE, WM_COMMAND, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW,
+    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetWindowLongPtrW, GWLP_USERDATA,
+    MSG, WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
     WNDCLASSW, WS_OVERLAPPED,
 };
 
 const HOTKEY_ID: i32 = 1;
+static WM_TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 struct AppState {
     audio: AudioManager,
@@ -29,6 +36,17 @@ struct AppState {
 
 fn main() -> windows::core::Result<()> {
     unsafe {
+        // Enforce single instance via named mutex in user session (Local\)
+        let mutex_handle = CreateMutexW(
+            None,
+            true,
+            w!("Local\\QuickMute_SingleInstance_Mutex_Jaichand20"),
+        )?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(mutex_handle);
+            return Ok(());
+        }
+
         let instance = HINSTANCE::default();
         let class_name = w!("QuickMuteWindowClass");
 
@@ -45,14 +63,21 @@ fn main() -> windows::core::Result<()> {
             class_name,
             w!("QuickMuteHiddenWindow"),
             WS_OVERLAPPED,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             HWND::default(),
             None,
             instance,
             None,
         )?;
 
-        let audio = AudioManager::new()?;
+        // Register for TaskbarCreated message in case Windows Explorer restarts
+        let taskbar_msg = RegisterWindowMessageW(w!("TaskbarCreated"));
+        WM_TASKBAR_CREATED.store(taskbar_msg, Ordering::Relaxed);
+
+        let mut audio = AudioManager::new()?;
         let initial_muted = audio.is_muted().unwrap_or(false);
 
         let mut tray = TrayIcon::new(hwnd);
@@ -72,6 +97,7 @@ fn main() -> windows::core::Result<()> {
 
         let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
         let _ = Rc::from_raw(state_ptr as *const RefCell<AppState>);
+        let _ = CloseHandle(mutex_handle);
     }
 
     Ok(())
@@ -90,6 +116,15 @@ unsafe extern "system" fn wnd_proc(
 
     let state = &*state_ptr;
 
+    let taskbar_msg = WM_TASKBAR_CREATED.load(Ordering::Relaxed);
+    if taskbar_msg != 0 && msg == taskbar_msg {
+        if let Ok(mut app) = state.try_borrow_mut() {
+            let is_muted = app.audio.is_muted().unwrap_or(false);
+            app.tray.re_add(is_muted);
+        }
+        return LRESULT(0);
+    }
+
     match msg {
         WM_HOTKEY => {
             if wparam.0 as i32 == HOTKEY_ID {
@@ -105,7 +140,7 @@ unsafe extern "system" fn wnd_proc(
         WM_TRAYICON => {
             let event = (lparam.0 & 0xFFFF) as u32;
             if event == WM_RBUTTONUP {
-                if let Ok(app) = state.try_borrow() {
+                if let Ok(mut app) = state.try_borrow_mut() {
                     let is_muted = app.audio.is_muted().unwrap_or(false);
                     app.tray.show_context_menu(is_muted);
                 }
@@ -131,6 +166,10 @@ unsafe extern "system" fn wnd_proc(
             } else if cmd_id == ID_TRAY_EXIT {
                 PostQuitMessage(0);
             }
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
