@@ -4,7 +4,7 @@ use windows::Win32::Media::Audio::{
     eCapture, eCommunications, eConsole, IMMDeviceEnumerator, MMDeviceEnumerator,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
 };
 
 pub struct AudioManager {
@@ -14,7 +14,7 @@ pub struct AudioManager {
 impl AudioManager {
     pub fn new() -> Result<Self> {
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let volume = Self::init_endpoint()?;
             Ok(Self { volume })
         }

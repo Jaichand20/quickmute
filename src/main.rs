@@ -10,7 +10,9 @@ use tray::{TrayIcon, ID_TRAY_EXIT, ID_TRAY_TOGGLE, WM_TRAYICON};
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::OnceLock;
+use std::time::Instant;
 use windows::core::w;
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
@@ -20,20 +22,58 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW,
-    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetWindowLongPtrW, GWLP_USERDATA,
-    MSG, WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
-    WNDCLASSW, WS_OVERLAPPED,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+    GetWindowLongPtrW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetWindowLongPtrW, SetWindowsHookExW, UnhookWindowsHookEx, GWLP_USERDATA, KBDLLHOOKSTRUCT,
+    MSG, WINDOW_EX_STYLE, WH_KEYBOARD_LL, WM_APP, WM_COMMAND, WM_DESTROY, WM_HOTKEY,
+    WM_KEYDOWN, WM_LBUTTONUP, WM_RBUTTONUP, WM_SYSKEYDOWN, WNDCLASSW, WS_OVERLAPPED,
 };
 
+const WM_APP_TRIGGER_MUTE: u32 = WM_APP + 2;
+static GLOBAL_HWND: AtomicIsize = AtomicIsize::new(0);
 static WM_TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static CONFIGURED_KEYS: OnceLock<Vec<u32>> = OnceLock::new();
+
+unsafe extern "system" fn low_level_keyboard_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 && (wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN) {
+        let kbd = *(lparam.0 as *const KBDLLHOOKSTRUCT);
+        log_debug(&format!("low_level_keyboard_proc: vk=0x{:X}, scan=0x{:X}", kbd.vkCode, kbd.scanCode));
+        let is_target = CONFIGURED_KEYS
+            .get()
+            .map_or(kbd.vkCode == 0x7C, |keys| keys.contains(&kbd.vkCode));
+
+        if is_target {
+            log_debug(&format!("low_level_keyboard_proc: MATCHED hotkey vk=0x{:X}", kbd.vkCode));
+            let hwnd_val = GLOBAL_HWND.load(Ordering::Relaxed);
+            if hwnd_val != 0 {
+                let _ = PostMessageW(
+                    HWND(hwnd_val as *mut _),
+                    WM_APP_TRIGGER_MUTE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+                return LRESULT(1);
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
 
 struct AppState {
     audio: AudioManager,
     tray: TrayIcon,
+    last_trigger: Instant,
 }
 
 fn main() -> windows::core::Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        log_debug(&format!("PANIC OCCURRED: {:?}", info));
+    }));
+
     unsafe {
         // Enforce single instance via named mutex in user session (Local\)
         let mutex_handle = CreateMutexW(
@@ -42,11 +82,14 @@ fn main() -> windows::core::Result<()> {
             w!("Local\\QuickMute_SingleInstance_Mutex_Jaichand20"),
         )?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            log_debug("Exiting: another instance is already running.");
             let _ = CloseHandle(mutex_handle);
             return Ok(());
         }
 
-        let instance = HINSTANCE::default();
+        let instance: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+            .map(|h| HINSTANCE(h.0))
+            .unwrap_or_default();
         let class_name = w!("QuickMuteWindowClass");
 
         let wnd_class = WNDCLASSW {
@@ -82,20 +125,49 @@ fn main() -> windows::core::Result<()> {
         let mut tray = TrayIcon::new(hwnd);
         tray.init(initial_muted);
 
-        let state = Rc::new(RefCell::new(AppState { audio, tray }));
+        let state = Rc::new(RefCell::new(AppState {
+            audio,
+            tray,
+            last_trigger: Instant::now() - std::time::Duration::from_secs(10),
+        }));
         let state_ptr = Rc::into_raw(state.clone()) as isize;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr);
 
+        GLOBAL_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+
         // Register configured hotkeys (defaults to F13 = 0x7C)
         let hotkeys = get_configured_keys();
+        CONFIGURED_KEYS.set(hotkeys.clone()).ok();
         for (idx, &vk) in hotkeys.iter().enumerate() {
             let id = (idx + 1) as i32;
-            let _ = RegisterHotKey(hwnd, id, HOT_KEY_MODIFIERS(0), vk);
+            let res = RegisterHotKey(hwnd, id, HOT_KEY_MODIFIERS(0), vk);
+            log_debug(&format!("RegisterHotKey id={}, vk=0x{:X}: {:?}", id, vk, res));
         }
 
+        // Install low-level keyboard hook (WH_KEYBOARD_LL) for reliable hardware macro capture
+        let hook = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_keyboard_proc),
+            instance,
+            0,
+        );
+        log_debug(&format!("SetWindowsHookExW WH_KEYBOARD_LL: {:?}", hook.is_ok()));
+
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+        log_debug("Entering message loop");
+        loop {
+            log_debug("Waiting for GetMessageW...");
+            let res = GetMessageW(&mut msg, HWND::default(), 0, 0);
+            log_debug(&format!("GetMessageW returned {}, msg=0x{:X}", res.0, msg.message));
+            if !res.as_bool() {
+                break;
+            }
             DispatchMessageW(&msg);
+        }
+        log_debug(&format!("Exited message loop, msg=0x{:X}", msg.message));
+
+        if let Ok(h) = hook {
+            let _ = UnhookWindowsHookEx(h);
         }
 
         for (idx, _) in hotkeys.iter().enumerate() {
@@ -164,12 +236,25 @@ hotkey = F13
     keys
 }
 
+fn log_debug(s: &str) {
+    use std::io::Write;
+    let log_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("quickmute.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("quickmute.log"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        let _ = writeln!(f, "{}", s);
+    }
+}
+
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    log_debug(&format!("wnd_proc: msg=0x{:X}, wparam={}, lparam=0x{:X}", msg, wparam.0, lparam.0));
+
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<AppState>;
     if state_ptr.is_null() {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -187,11 +272,29 @@ unsafe extern "system" fn wnd_proc(
     }
 
     match msg {
-        WM_HOTKEY => {
-            if let Ok(mut app) = state.try_borrow_mut() {
-                if let Ok(new_mute) = app.audio.toggle_mute() {
-                    app.tray.update(new_mute);
-                    play_feedback(new_mute);
+        WM_HOTKEY | WM_APP_TRIGGER_MUTE => {
+            log_debug(&format!("Mute trigger received! msg=0x{:X}, wparam={}, lparam=0x{:X}", msg, wparam.0, lparam.0));
+            match state.try_borrow_mut() {
+                Ok(mut app) => {
+                    if app.last_trigger.elapsed().as_millis() < 250 {
+                        log_debug("Ignored trigger: debounce active (< 250ms)");
+                        return LRESULT(0);
+                    }
+                    app.last_trigger = Instant::now();
+
+                    match app.audio.toggle_mute() {
+                        Ok(new_mute) => {
+                            log_debug(&format!("Toggled mute successfully! new_mute={}", new_mute));
+                            app.tray.update(new_mute);
+                            play_feedback(new_mute);
+                        }
+                        Err(e) => {
+                            log_debug(&format!("toggle_mute failed: {:?}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    log_debug(&format!("state.try_borrow_mut failed: {:?}", e));
                 }
             }
             LRESULT(0)
