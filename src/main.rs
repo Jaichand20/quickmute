@@ -87,6 +87,19 @@ fn main() -> windows::core::Result<()> {
             return Ok(());
         }
 
+        // Attach to user's interactive desktop so system tray icon and UI are visible
+        use windows::Win32::System::StationsAndDesktops::{
+            OpenDesktopW, OpenWindowStationW, SetProcessWindowStation, SetThreadDesktop,
+            DESKTOP_CONTROL_FLAGS,
+        };
+        if let Ok(winsta) = OpenWindowStationW(w!("WinSta0"), false, 0x02000000 | 0x0000037F) {
+            let _ = SetProcessWindowStation(winsta);
+            if let Ok(desk) = OpenDesktopW(w!("Default"), DESKTOP_CONTROL_FLAGS(0), false, 0x02000000 | 0x000001FF) {
+                let ok_desk = SetThreadDesktop(desk);
+                log_debug(&format!("Attached to WinSta0\\Default: {:?}", ok_desk.is_ok()));
+            }
+        }
+
         let instance: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
             .map(|h| HINSTANCE(h.0))
             .unwrap_or_default();

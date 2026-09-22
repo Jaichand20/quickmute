@@ -19,6 +19,17 @@ pub const WM_TRAYICON: u32 = 0x8000 + 1; // WM_APP + 1
 pub const ID_TRAY_TOGGLE: usize = 1001;
 pub const ID_TRAY_EXIT: usize = 1002;
 
+fn log_tray(s: &str) {
+    use std::io::Write;
+    let log_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("quickmute.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("quickmute.log"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        let _ = writeln!(f, "{}", s);
+    }
+}
+
 pub struct TrayIcon {
     hwnd: HWND,
     icon_muted: HICON,
@@ -50,12 +61,18 @@ impl TrayIcon {
     pub fn update(&mut self, is_muted: bool) {
         unsafe {
             let nid = self.build_nid(is_muted);
+            log_tray(&format!("update: icon_unmuted=0x{:X}, icon_muted=0x{:X}, selected_hIcon=0x{:X}", self.icon_unmuted.0 as usize, self.icon_muted.0 as usize, nid.hIcon.0 as usize));
             if self.added {
-                if !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-                    let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+                let res = Shell_NotifyIconW(NIM_MODIFY, &nid);
+                log_tray(&format!("Shell_NotifyIconW NIM_MODIFY: {}, err={}", res.as_bool(), windows::Win32::Foundation::GetLastError().0));
+                if !res.as_bool() {
+                    let res_add = Shell_NotifyIconW(NIM_ADD, &nid);
+                    log_tray(&format!("Shell_NotifyIconW fallback NIM_ADD: {}, err={}", res_add.as_bool(), windows::Win32::Foundation::GetLastError().0));
                 }
             } else {
-                if Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+                let res = Shell_NotifyIconW(NIM_ADD, &nid);
+                log_tray(&format!("Shell_NotifyIconW NIM_ADD: {}, err={}", res.as_bool(), windows::Win32::Foundation::GetLastError().0));
+                if res.as_bool() {
                     self.added = true;
                 }
             }
