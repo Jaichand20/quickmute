@@ -84,9 +84,9 @@ impl TrayIcon {
         };
 
         let tip = if is_muted {
-            "QuickMute: MUTED [Home to unmute]"
+            "QuickMute: MUTED [Button to unmute]"
         } else {
-            "QuickMute: LIVE [Home to mute]"
+            "QuickMute: LIVE [Button to mute]"
         };
 
         let wide: Vec<u16> = tip.encode_utf16().chain(std::iter::once(0)).collect();

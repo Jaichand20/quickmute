@@ -17,7 +17,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_HOME,
+    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW,
@@ -26,7 +26,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_OVERLAPPED,
 };
 
-const HOTKEY_ID: i32 = 1;
 static WM_TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 struct AppState {
@@ -87,20 +86,82 @@ fn main() -> windows::core::Result<()> {
         let state_ptr = Rc::into_raw(state.clone()) as isize;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr);
 
-        // Register global Home key hotkey (VK_HOME = 0x24)
-        let _ = RegisterHotKey(hwnd, HOTKEY_ID, HOT_KEY_MODIFIERS(0), VK_HOME.0 as u32);
+        // Register configured hotkeys (defaults to F13 = 0x7C)
+        let hotkeys = get_configured_keys();
+        for (idx, &vk) in hotkeys.iter().enumerate() {
+            let id = (idx + 1) as i32;
+            let _ = RegisterHotKey(hwnd, id, HOT_KEY_MODIFIERS(0), vk);
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
             DispatchMessageW(&msg);
         }
 
-        let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+        for (idx, _) in hotkeys.iter().enumerate() {
+            let id = (idx + 1) as i32;
+            let _ = UnregisterHotKey(hwnd, id);
+        }
         let _ = Rc::from_raw(state_ptr as *const RefCell<AppState>);
         let _ = CloseHandle(mutex_handle);
     }
 
     Ok(())
+}
+
+fn get_configured_keys() -> Vec<u32> {
+    let config_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("config.ini")))
+        .unwrap_or_else(|| std::path::PathBuf::from("config.ini"));
+
+    let mut keys = Vec::new();
+
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.starts_with(';') || line.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("hotkey") {
+                    for part in v.split(',') {
+                        match part.trim().to_ascii_uppercase().as_str() {
+                            "F13" => keys.push(0x7C),
+                            "HOME" => keys.push(0x24),
+                            "F14" => keys.push(0x7D),
+                            "F15" => keys.push(0x7E),
+                            "F16" => keys.push(0x7F),
+                            "F17" => keys.push(0x80),
+                            "F18" => keys.push(0x81),
+                            "F19" => keys.push(0x82),
+                            "F20" => keys.push(0x83),
+                            "F21" => keys.push(0x84),
+                            "F22" => keys.push(0x85),
+                            "F23" => keys.push(0x86),
+                            "F24" => keys.push(0x87),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if keys.is_empty() {
+        // Default to F13 (the dedicated macro button)
+        keys.push(0x7C);
+        let default_config = "\
+# QuickMute Configuration
+# Configure your physical mute hotkey below.
+# Supported keys: F13, HOME, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24
+# You can also specify multiple keys separated by commas (e.g. hotkey = F13, HOME)
+hotkey = F13
+";
+        let _ = std::fs::write(&config_path, default_config);
+    }
+
+    keys
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -127,12 +188,10 @@ unsafe extern "system" fn wnd_proc(
 
     match msg {
         WM_HOTKEY => {
-            if wparam.0 as i32 == HOTKEY_ID {
-                if let Ok(mut app) = state.try_borrow_mut() {
-                    if let Ok(new_mute) = app.audio.toggle_mute() {
-                        app.tray.update(new_mute);
-                        play_feedback(new_mute);
-                    }
+            if let Ok(mut app) = state.try_borrow_mut() {
+                if let Ok(new_mute) = app.audio.toggle_mute() {
+                    app.tray.update(new_mute);
+                    play_feedback(new_mute);
                 }
             }
             LRESULT(0)
