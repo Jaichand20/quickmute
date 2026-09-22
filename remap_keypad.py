@@ -9,9 +9,7 @@ FILE_SHARE_WRITE = 2
 OPEN_EXISTING = 3
 
 k = ctypes.windll.kernel32
-hid = ctypes.windll.hid
 
-# The vendor configuration interface path for VID_5131&PID_2019
 path = r"\\?\HID#VID_5131&PID_2019&MI_01#8&247e9c26&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
 
 print(f"Opening device: {path}")
@@ -22,28 +20,27 @@ if h == -1:
 
 print("Device opened successfully!")
 
-# USB HID usage code for F13 is 0x68
+# Key: F13 is 0x68 in USB HID
 KEY_F13 = 0x68
 
-# Program pins 1, 2, and 3 to F13 so whichever pin the physical switch is wired to, it outputs F13.
-# (FS1-P typically uses pin 3 / P1.5, but covering 1, 2, 3 guarantees coverage)
+# Program pins 1, 2, 3
 pins_to_program = [0x01, 0x02, 0x03]
 
 for pin in pins_to_program:
     buf = bytearray(65)
-    buf[0] = 0x10  # REPORT_SET_CODE
-    buf[1] = pin   # Pin ID
-    buf[2] = 0x80  # Key Command
-    buf[3] = 0x08  # Payload size
-    buf[4] = 0x00  # Modifiers (None)
-    buf[5] = 0x00  # Reserved
-    buf[6] = KEY_F13  # Key: F13
+    buf[0] = 0x10     # REPORT_SET_CODE
+    buf[1] = pin      # Pin ID
+    buf[2] = 0x00     # Modifier: NONE (0x00) -> was 0x80 which triggered Win key!
+    buf[3] = KEY_F13  # KeyCode: F13 (0x68) -> was 0x08 which triggered 'E'!
+    buf[4] = 0x00     # Reserved
+    buf[5] = 0x00     # Reserved
+    buf[6] = KEY_F13  # Also set byte 6 in case firmware uses offset 6
     
     written = wintypes.DWORD()
     ok = k.WriteFile(h, (ctypes.c_char * 65).from_buffer(buf), 65, ctypes.byref(written), None)
     err = k.GetLastError()
-    print(f"Programming Pin 0x{pin:02X} -> F13 (0x{KEY_F13:02X}): Success={bool(ok)}, Bytes={written.value}, Err={err}")
+    print(f"Programming Pin 0x{pin:02X} -> Modifier=0x00, Key=0x{KEY_F13:02X} (F13): Success={bool(ok)}, Err={err}")
     time.sleep(0.05)
 
 k.CloseHandle(h)
-print("\n[SUCCESS] Reprogramming complete! The button's flash memory has been updated to F13.")
+print("\n[SUCCESS] Reprogrammed! The button is now configured to send pure F13 with NO modifiers.")
