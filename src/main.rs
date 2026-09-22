@@ -19,7 +19,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
+    keybd_event, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
@@ -48,6 +49,11 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
         if is_target {
             log_debug(&format!("low_level_keyboard_proc: MATCHED hotkey vk=0x{:X}", kbd.vkCode));
+            // Send unassigned mask key (0xE8) to tell Windows that a non-modifier key was pressed.
+            // This prevents Windows from treating the Win+Ctrl+Alt+Shift release as the Office key (m365.cloud.microsoft).
+            keybd_event(0xE8, 0, KEYBD_EVENT_FLAGS(0), 0);
+            keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
+
             let hwnd_val = GLOBAL_HWND.load(Ordering::Relaxed);
             if hwnd_val != 0 {
                 let _ = PostMessageW(
